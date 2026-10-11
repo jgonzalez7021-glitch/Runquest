@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>RunQuest: Boricua Edition 🇵🇷</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+    body, html { width: 100%; height: 100%; overflow: hidden; font-family: system-ui, -apple-system, sans-serif; background: #121212; color: #fff; }
+    #app { display: flex; flex-direction: column; height: 100%; position: relative; }
+    #top-bar { display: grid; grid-template-columns: repeat(4, 1fr); background: rgba(18,18,18,0.95); padding: 12px 5px; text-align: center; border-bottom: 2px solid #333; z-index: 1000; }
+    .val { font-size: 1.2rem; font-weight: 800; color: #00E676; }
+    .lbl { font-size: 0.65rem; color: #aaa; text-transform: uppercase; }
+    #map { flex: 1; width: 100%; z-index: 1; }
+    #drunk-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 500; transition: all 0.5s; }
+    .drunk-effect { animation: sway 3s infinite alternate ease-in-out; backdrop-filter: blur(1px) hue-rotate(30deg); }
+    @keyframes sway { 0% { transform: rotate(-1.5deg) scale(1.01); } 100% { transform: rotate(1.5deg) scale(1.01); } }
+    #bottom-bar { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 1000; display: flex; gap: 10px; width: 90%; max-width: 400px; }
+    .btn { flex: 1; padding: 15px; border: none; border-radius: 30px; font-size: 1rem; font-weight: 800; color: #fff; cursor: pointer; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+    #btn-start { background: linear-gradient(135deg, #00E676, #00B0FF); }
+    #btn-stop { background: linear-gradient(135deg, #FF1744, #D50000); display: none; }
+    .btn-sub { width: 50px; height: 50px; border-radius: 50%; background: #222; border: 1px solid #444; color: #fff; font-size: 1.2rem; }
+    .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 2000; align-items: center; justify-content: center; padding: 20px; }
+    .modal-box { background: #1e1e1e; border-radius: 16px; padding: 20px; width: 100%; max-width: 350px; border: 1px solid #333; }
+    .group { margin-bottom: 15px; }
+    .group label { display: block; font-size: 0.85rem; color: #ccc; margin-bottom: 5px; }
+    .group select, .group input { width: 100%; padding: 10px; background: #2b2b2b; border: 1px solid #444; color: #fff; border-radius: 8px; }
+    .btn-close { width: 100%; padding: 12px; background: #00E676; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; color: #000; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div id="drunk-overlay"></div>
+    <div id="top-bar">
+      <div><div class="val" id="val-dist">0.00</div><div class="lbl">Millas</div></div>
+      <div><div class="val" id="val-speed">0.0</div><div class="lbl">MPH</div></div>
+      <div><div class="val" id="val-steps">0</div><div class="lbl">Pasos</div></div>
+      <div><div class="val" id="val-vibe">0%</div><div class="lbl" id="lbl-vibe">Vibe</div></div>
+    </div>
+    <div id="map"></div>
+    <div id="bottom-bar">
+      <button class="btn-sub" id="btn-cfg">⚙️</button>
+      <button class="btn" id="btn-start">¡ARRANCAR ROUTE!</button>
+      <button class="btn" id="btn-stop">PAUSAR / TERMINAR</button>
+    </div>
+  </div>
+
+  <div class="modal" id="modal">
+    <div class="modal-content modal-box">
+      <h3 style="color:#00E676; margin-bottom:15px;">Ajustes Boricua Quest 🇵🇷</h3>
+      <div class="group">
+        <label>Modo de Juego:</label>
+        <select id="sel-mode">
+          <option value="chupa">🐐 Chupacabras Run</option>
+          <option value="coqui">🐸 Cacería de Coquíes</option>
+          <option value="ron">🍹 Ron Boricua Boost</option>
+          <option value="borracho">🍺 Ruta del Borracho (Chinchorreo)</option>
+        </select>
+      </div>
+      <div class="group">
+        <label>Velocidad Chupacabras (Modo 🐐):</label>
+        <select id="sel-diff">
+          <option value="1.2">Suave (1.2 mph - Caminata)</option>
+          <option value="3.5">Mediano (3.5 mph - Trote)</option>
+          <option value="6.5">¡A Fuego! 🔥 (6.5 mph - Carrera)</option>
+        </select>
+      </div>
+      <button class="btn-close" id="btn-save">GUARDAR Y CERRAR</button>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    let map, userMarker, monsterMarker;
+    let isTracking = false, watchId = null, timerInt = null;
+    let userPos = null, monsterPos = null;
+    let dist = 0, steps = 0, vibe = 0;
+    let mode = 'borracho', speedFloor = 1.2;
+    let items = [];
+
+    function init() {
+      map = L.map('map', { zoomControl: false }).setView([18.4655, -66.1057], 16);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+      const rIcon = L.divIcon({ html: '🏃‍♂️', className: '', iconSize: [30,30] });
+      const mIcon = L.divIcon({ html: '🐐', className: '', iconSize: [30,30] });
+
+      userMarker = L.marker([18.4655, -66.1057], { icon: rIcon }).addTo(map);
+      monsterMarker = L.marker([18.4655, -66.1057], { icon: mIcon }).addTo(map);
+
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(p => {
+          userPos = { lat: p.coords.latitude, lng: p.coords.longitude };
+          map.setView([userPos.lat, userPos.lng], 17);
+          userMarker.setLatLng([userPos.lat, userPos.lng]);
+          spawnItems();
+        });
+      }
+    }
+
+    function spawnItems() {
+      if (!userPos) return;
+      items.forEach(i => map.removeLayer(i.marker));
+      items = [];
+
+      const emojis = mode === 'borracho' ? ['🍺', '🍹', '🍻', '🍷'] : (mode === 'coqui' ? ['🐸', '🟢', '🟡'] : ['🍹', '⚡']);
+      for (let i = 0; i < 8; i++) {
+        const offsetLat = (Math.random() - 0.5) * 0.006;
+        const offsetLng = (Math.random() - 0.5) * 0.006;
+        const emoji = emojis[Math.floor(Math.random() * emojis.length)];
+        const icon = L.divIcon({ html: emoji, className: '', iconSize: [25,25] });
+        const m = L.marker([userPos.lat + offsetLat, userPos.lng + offsetLng], { icon }).addTo(map);
+        items.push({ lat: userPos.lat + offsetLat, lng: userPos.lng + offsetLng, marker: m });
+      }
+    }
+
+    function start() {
+      isTracking = true;
+      document.getElementById('btn-start').style.display = 'none';
+      document.getElementById('btn-stop').style.display = 'block';
+
+      if (window.DeviceMotionEvent) {
+        let lastAcc = 0;
+        window.addEventListener('devicemotion', e => {
+          if (!isTracking || !e.accelerationIncludingGravity) return;
+          let a = e.accelerationIncludingGravity;
+          let tot = Math.sqrt(a.x*a.x + a.y*a.y + a.z*a.z);
+          if (Math.abs(tot - lastAcc) > 3.0) {
+            steps++;
+            document.getElementById('val-steps').innerText = steps;
+          }
+          lastAcc = tot;
+        });
+      }
+
+      if (navigator.geolocation) {
+        watchId = navigator.geolocation.watchPosition(p => {
+          let lat = p.coords.latitude, lng = p.coords.longitude;
+          let spd = (p.coords.speed || 0) * 2.23694;
+          if (userPos) {
+            let d = getDist(userPos.lat, userPos.lng, lat, lng);
+            if (d > 0.001) dist += d;
+          }
+          userPos = { lat, lng };
+          userMarker.setLatLng([lat, lng]);
+          map.panTo([lat, lng]);
+
+          document.getElementById('val-dist').innerText = dist.toFixed(2);
+          document.getElementById('val-speed').innerText = spd.toFixed(1);
+
+          checkPickups();
+          if (mode === 'chupa') updateMonster();
+        }, null, { enableHighAccuracy: true });
+      }
+    }
+
+    function checkPickups() {
+      items.forEach((item, idx) => {
+        let d = getDist(userPos.lat, userPos.lng, item.lat, item.lng);
+        if (d < 0.015) { // Cerca para recoger
+          map.removeLayer(item.marker);
+          items.splice(idx, 1);
+          vibe += 15;
+          if (vibe > 100) vibe = 100;
+          document.getElementById('val-vibe').innerText = vibe + '%';
+          if (mode === 'borracho' && vibe > 40) {
+            document.getElementById('drunk-overlay').classList.add('drunk-effect');
+          }
+        }
+      });
+    }
+
+    function updateMonster() {
+      if (!monsterPos) monsterPos = { lat: userPos.lat - 0.0003, lng: userPos.lng - 0.0003 };
+      let stepFactor = speedFloor * 0.000005;
+      monsterPos.lat += (userPos.lat - monsterPos.lat) * stepFactor;
+      monsterPos.lng += (userPos.lng - monsterPos.lng) * stepFactor;
+      monsterMarker.setLatLng([monsterPos.lat, monsterPos.lng]);
+    }
+
+    function stop() {
+      isTracking = false;
+      document.getElementById('btn-start').style.display = 'block';
+      document.getElementById('btn-stop').style.display = 'none';
+      if (watchId) navigator.geolocation.clearWatch(watchId);
+    }
+
+    function getDist(lat1, lon1, lat2, lon2) {
+      let R = 3958.8;
+      let dLat = (lat2-lat1)*Math.PI/180, dLon = (lon2-lon1)*Math.PI/180;
+      let a = Math.sin(dLat/2)*Math.sin(dLat/2) + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)*Math.sin(dLon/2);
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    }
+
+    document.getElementById('btn-cfg').onclick = () => document.getElementById('modal').style.display = 'flex';
+    document.getElementById('btn-save').onclick = () => {
+      mode = document.getElementById('sel-mode').value;
+      speedFloor = parseFloat(document.getElementById('sel-diff').value);
+      monsterMarker.setOpacity(mode === 'chupa' ? 1 : 0);
+      spawnItems();
+      document.getElementById('modal').style.display = 'none';
+    };
+    document.getElementById('btn-start').onclick = start;
+    document.getElementById('btn-stop').onclick = stop;
+
+    window.onload = init;
+  </script>
+</body>
+</html>
